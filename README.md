@@ -13,7 +13,7 @@ The solution provides two main components:
 
 This application demostrates the typical multi-language logic where the system initially prompts callers to select their preferred language: press 1 for Spanish or remain on the line for English. Once the language if selected the IVR interacts with the callers in their language of choice:  
 
-![Demo-Workflow](/images/multi-language-ivr-workflow-studio.png)
+![Demo-Workflow](/images/multi-language-app-workflow-studio.png)
 
 ## Architecture Overview
 
