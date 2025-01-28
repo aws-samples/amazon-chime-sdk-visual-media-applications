@@ -7,13 +7,13 @@ This solution demonstrates how to build custom telephony applications for Amazon
 The solution provides two main components:
 
 - **Event Router**: A Lambda function that handles bidirectional routing logic for SIP media applications
-- **Demo IVR Workflow**: A Step Function that implements the logic of a demo multi-language telephony application
+- **Demo Workflow**: A Step Function that implements the logic of a demo multi-language telephony application
 
 ## Demo Multi-language telephony application
 
 This application demostrates the typical multi-language logic where the system initially prompts callers to select their preferred language: press 1 for Spanish or remain on the line for English. Once the language if selected the IVR interacts with the callers in their language of choice:  
 
-![IVR-Workflow](/images/multi-language-ivr-workflow-studio.png)
+![Demo-Workflow](/images/multi-language-ivr-workflow-studio.png)
 
 ## Architecture Overview
 
@@ -58,7 +58,9 @@ Architecture walkthrough:
 1. **Clone the repository**
    ```bash
    git clone https://github.com/aws-samples/amazon-chime-sdk-visual-media-applications
+
    cd amazon-chime-sdk-visual-media-applications
+   
    npm install
    ```
 
