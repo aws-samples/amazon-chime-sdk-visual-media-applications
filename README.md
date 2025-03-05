@@ -72,19 +72,19 @@ Architecture walkthrough:
 
 The CDK stack creates:
 
-- `phoneNumberBusiness` – Provisioned phone number 
-- `sipMediaApp` – SIP Media Application pointing to the Lambda function
-- `sipRule` – SIP Rule routes `phoneNumberBusiness` to the `sipMediaApp`.
-- `stepfunctionBusinessProxyWorkflow` – Step Functions workflow for the telephony application
-- `roleStepfuntionBusinessProxyWorkflow` – Execution Role for the Step Function
-- `lambdaProcessPSTNAudioServiceCalls` – Lambda function targeted by the `SipMediaApp`
-- `roleLambdaProcessPSTNAudioServiceCalls` – Execution Role for the Lambda function
+- `phoneNumberBusiness` – Provisioned phone number for the sample application 
+- `sipMediaApp` – SIPMedia application that routes calls to `lambdaProcessPSTNAudioServiceCalls`
+- `sipRule` – SIPRule that directs calls from `phoneNumberBusiness` to `sipMediaApp`.
+- `stepfunctionBusinessProxyWorkflow` – Step Functions workflow for the sample application
+- `roleStepfuntionBusinessProxyWorkflow` – IAM Role for `stepfunctionBusinessProxyWorkflow`
+- `lambdaProcessPSTNAudioServiceCalls` – Lambda function for call processing
+- `roleLambdaProcessPSTNAudioServiceCalls` – IAM Role for `lambdaProcessPSTNAudioServiceCalls`
 - `dynamoDBTableBusinessVoicemails` – DynamoDB table to store customer voicemails
-- `s3BucketApp` – Amazon S3 bucket to store system recordings and customer voicemails
-- `s3BucketPolicy` – Policy to allow the PSTN audio service access to the S3 bucket
-- `lambdaOutboundCall` – Lambda function used to place scheduled customer calls
-- `roleLambdaOutboundCall` – Execution role for the outbound call Lambda function
-- `roleEventBridgeLambdaCall` – Execution role to allow EventBridge to call the Lambda function
+- `s3BucketApp` – S3 bucket for storing system recordings and customer voicemails
+- `s3BucketPolicy` – IAM Policy granting PSTN audio service access to `s3BucketApp`
+- `lambdaOutboundCall` – Lambda function for placing scheduled customer calls
+- `roleLambdaOutboundCall` – IAM Role for `lambdaOutboundCall`
+- `roleEventBridgeLambdaCall` – IAM Role to allow EventBridge service to execute `lambdaOutboundCall`
 
 
 Once deployed, you can call the provisioned phone number to interact with the telephony application. 
