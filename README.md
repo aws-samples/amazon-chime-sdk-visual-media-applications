@@ -1,15 +1,15 @@
 # Visually build telephony applications with AWS Step Functions
 
-This solution demonstrates how combining AWS Step Functions and Amazon Chime SDK PSTN audio service streamlines the development of reliable telephony applications through visual workflow design and managed error handling. We provided a sample application implementing six core business phone features, showcasing how the solution effectively manages multiple conditional paths and edge cases like disconnections and invalid inputs. The serverless architecture created enables seamless integration between the two services through JSON-based communication, while providing automatic scaling and pay-per-use pricing. Together, these components create a robust foundation for building sophisticated telephony applications that reduce maintenance costs and enhance reliability.
+This solution demonstrates how combining AWS Step Functions and Amazon Chime SDK PSTN audio service streamlines the development of reliable telephony applications through visual workflow design and managed error handling. We provided a sample telephony application implementing six core business phone features, showcasing how the solution effectively manages multiple conditional paths and edge cases like disconnections and invalid inputs. The serverless architecture created enables seamless integration between the two services through JSON-based communication, while providing automatic scaling and pay-per-use pricing. Together, these components create a robust foundation for building sophisticated telephony applications that reduce maintenance costs and enhance reliability.
 
 ## Solution Overview
 
 The solution provides two main components:
 
-- **Event Router**: A Lambda function that handles bidirectional routing logic for SIP media applications
-- **Demo Workflow**: A Step Function workflow that implements the logic of a demo business-number telephony application
+- **Event Router**: A Lambda function that routes JSON messages between Step Functions and PSTN audio service
+- **Demo Workflow**: A Step Function workflow implementing the sample telephony application
 
-## Demo business-number telephony application
+## Sample telephony application
 
 This application allows business owners manage customer calls through a dedicated business phone number. This solution helps small business owners separate personal and business communications while managing all calls from their existing phone. For more information check this related [Blog](https://aws-blogs-prod.amazon.com/messaging-and-targeting/). 
 
@@ -25,9 +25,9 @@ Main components:
 
 | Component | Description |
 |-----------|-------------|
-| `eventRouter` | Lambda function implementing bidirectional routing logic |
+| `eventRouter` | Lambda function managing JSON message exchange |
 | `appWorkflow` | Step Function implementing call flow logic |
-| `actionsQueue` | Amazon Simple Queue Service (SQS) queue storing response actions |
+| `actionsQueue` | Amazon Simple Queue Service (Amazon SQS) queue storing response actions |
 
 Architecture walkthrough:
 
@@ -46,7 +46,7 @@ Architecture walkthrough:
 ## Prerequisites
 
 1. AWS Management Console access
-2. Node.js and NPM installed
+2. Node.js and npm installed
 3. AWS CLI installed and configured
 
 ## Getting Started
@@ -63,8 +63,8 @@ Architecture walkthrough:
 2. **Deploy the stack**
    ```bash
    # Default AWS CLI credentials are used, otherwise use the –-profile parameter
-   # personalNumber, the personal phone number of the business owner in E.164 format
-   # businessAreaCode, the United States 3 digits area code used to provision the business number  
+   # personalNumber: the personal phone number of the business owner in E.164 format
+   # businessAreaCode: the United States area code used to provision the business number  
    cdk deploy –-context personalNumber=+1NPAXXXXXXX –-context businessAreaCode=NPA
    ```
 
@@ -73,8 +73,8 @@ Architecture walkthrough:
 The CDK stack creates:
 
 - `phoneNumberBusiness` – Provisioned phone number for the sample application 
-- `sipMediaApp` – SIPMedia application that routes calls to `lambdaProcessPSTNAudioServiceCalls`
-- `sipRule` – SIPRule that directs calls from `phoneNumberBusiness` to `sipMediaApp`.
+- `sipMediaApp` – SIP media application that routes calls to `lambdaProcessPSTNAudioServiceCalls`
+- `sipRule` – SIP rule that directs calls from `phoneNumberBusiness` to `sipMediaApp`.
 - `stepfunctionBusinessProxyWorkflow` – Step Functions workflow for the sample application
 - `roleStepfuntionBusinessProxyWorkflow` – IAM Role for `stepfunctionBusinessProxyWorkflow`
 - `lambdaProcessPSTNAudioServiceCalls` – Lambda function for call processing
@@ -84,10 +84,10 @@ The CDK stack creates:
 - `s3BucketPolicy` – IAM Policy granting PSTN audio service access to `s3BucketApp`
 - `lambdaOutboundCall` – Lambda function for placing scheduled customer calls
 - `roleLambdaOutboundCall` – IAM Role for `lambdaOutboundCall`
-- `roleEventBridgeLambdaCall` – IAM Role to allow EventBridge service to execute `lambdaOutboundCall`
+- `roleEventBridgeLambdaCall` – IAM Role to allow Amazon EventBridge service to execute `lambdaOutboundCall`
 
 
-Once deployed, you can call the provisioned phone number to interact with the telephony application. 
+Once deployed, call the provisioned phone number to test the sample application. 
 
 ## Cleanup
 
