@@ -56,8 +56,7 @@ export class MediaAppBlog1Stack extends cdk.Stack {
               resources: ["*"],
               actions: [
                 "chime:CreateSipMediaApplicationCall"
-              ],
-              principals: [new iam.ServicePrincipal('scheduler.amazonaws.com')]
+              ]
             }),
           ],
         }),
