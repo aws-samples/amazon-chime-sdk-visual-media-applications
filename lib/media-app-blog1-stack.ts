@@ -57,6 +57,7 @@ export class MediaAppBlog1Stack extends cdk.Stack {
               actions: [
                 "chime:CreateSipMediaApplicationCall"
               ],
+              principals: [new iam.ServicePrincipal('scheduler.amazonaws.com')]
             }),
           ],
         }),
@@ -76,21 +77,32 @@ export class MediaAppBlog1Stack extends cdk.Stack {
       role: roleLambdaOutboundCall,
     });
 
+    const dynamoDBTableBusinessVoicemails  = new dynamodb.Table(this, 'dynamoDBTableBusinessVoicemails', {
+      tableName: 'BusinessProxyVoicemails',
+      partitionKey: {
+        name: 'Tag',
+        type: dynamodb.AttributeType.STRING
+      }
+    });
+
     const roleStepfuntionBusinessProxyWorkflow = new iam.Role(this, "roleStepfuntionBusinessProxyWorkflow", {
       assumedBy: new iam.ServicePrincipal("states.amazonaws.com"),
       inlinePolicies: {
         ["wokflowPolicy"]: new iam.PolicyDocument({
           statements: [
             new iam.PolicyStatement({
+              actions: [
+                "dynamodb:PutItem",
+                "dynamodb:GetItem"    
+              ],
+              resources: [dynamoDBTableBusinessVoicemails.tableArn]
+            }),
+            new iam.PolicyStatement({
               resources: ["*"],
               actions: [
                 "sqs:SendMessage",
-                "bedrock:InvokeModel",
-                "dynamodb:PutItem",
-                "dynamodb:GetItem",
                 "iam:PassRole",
-                "scheduler:CreateSchedule",
-                "lambda:InvokeFunction"
+                "scheduler:CreateSchedule"
               ],
             }),
           ],
@@ -104,10 +116,10 @@ export class MediaAppBlog1Stack extends cdk.Stack {
         ["eventBridgePolicy"]: new iam.PolicyDocument({
           statements: [
             new iam.PolicyStatement({
-              resources: ["*"],
               actions: [
                 "lambda:InvokeFunction"
               ],
+              resources: [lambdaOutboundCall.functionArn]
             }),
           ],
         }),
@@ -188,16 +200,5 @@ export class MediaAppBlog1Stack extends cdk.Stack {
         },
       ],
     });
-
-    const dynamoDBTableBusinessVoicemails  = new dynamodb.Table(this, 'dynamoDBTableBusinessVoicemails', {
-      tableName: 'BusinessProxyVoicemails',
-      partitionKey: {
-        name: 'Tag',
-        type: dynamodb.AttributeType.STRING
-      }
-    });
-
-    
-
   }
 }
