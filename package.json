@@ -22,6 +22,7 @@
   "dependencies": {
     "aws-cdk-lib": "^2.181.1",
     "cdk-amazon-chime-resources": "^3.2.25",
+    "cdk-nag": "^2.35.42",
     "constructs": "^10.0.0"
   }
 }

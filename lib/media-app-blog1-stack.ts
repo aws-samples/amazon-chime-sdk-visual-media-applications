@@ -75,7 +75,7 @@ export class MediaAppBlog1Stack extends cdk.Stack {
 
     const lambdaOutboundCall = new lambda.Function(this, "lambdaOutboundCall", {
       functionName: "place_chime_outbound_call",
-      runtime: lambda.Runtime.PYTHON_3_12, 
+      runtime: lambda.Runtime.PYTHON_3_13, 
       handler: "lambda_function.lambda_handler",
       code: lambda.Code.fromAsset('src/lambda_place_chime_outbound_call'),
       role: roleLambdaOutboundCall,
@@ -177,7 +177,7 @@ export class MediaAppBlog1Stack extends cdk.Stack {
 
     const lambdaProcessPSTNAudioServiceCalls = new lambda.Function(this, "lambdaProcessPSTNAudioServiceCalls", {
       functionName: "process_pstn_audio_service_calls",
-      runtime: lambda.Runtime.PYTHON_3_12, 
+      runtime: lambda.Runtime.PYTHON_3_13, 
       handler: "lambda_function.lambda_handler",
       code: lambda.Code.fromAsset('src/lambda_process_pstn_audio_service_calls'),
       environment: {
