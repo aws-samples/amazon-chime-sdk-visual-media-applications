@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as cdk from 'aws-cdk-lib';
+import { Fn } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import { Duration } from "aws-cdk-lib/core";
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -27,13 +28,15 @@ export class MediaAppBlog1Stack extends cdk.Stack {
       phoneProductType: chime.PhoneProductType.SMA,
     });
 
-    const uniqueBucketName = 'pstn-media-apps-' + chimePhoneNumber.node.addr;
-
+    const phoneNumberPart = Fn.select(1, Fn.split('+', chimePhoneNumber.phoneNumber));
+    const bucketUniqueId = Fn.sub('pstn-media-apps-${phoneNumber}', {
+      phoneNumber: phoneNumberPart
+    });
     const s3BucketApp  = new s3.Bucket(this, 's3BucketApp', {
-      bucketName: uniqueBucketName,
+      bucketName: bucketUniqueId,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: true,
-      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL     
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,          
     });
     s3BucketApp.addToResourcePolicy(new iam.PolicyStatement({
       actions: ['s3:GetObject','s3:PutObject','s3:PutObjectAcl'],
@@ -46,6 +49,8 @@ export class MediaAppBlog1Stack extends cdk.Stack {
       destinationBucket: s3BucketApp,
       contentType: 'audio/wav'
     });
+
+    s3BucketApp.node.addDependency(chimePhoneNumber);
 
     const roleLambdaOutboundCall = new iam.Role(this, "roleLambdaOutboundCall", {
       assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
@@ -81,7 +86,8 @@ export class MediaAppBlog1Stack extends cdk.Stack {
       partitionKey: {
         name: 'Tag',
         type: dynamodb.AttributeType.STRING
-      }
+      },
+      removalPolicy: cdk.RemovalPolicy.DESTROY
     });
 
     const roleStepfuntionBusinessProxyWorkflow = new iam.Role(this, "roleStepfuntionBusinessProxyWorkflow", {
@@ -199,5 +205,7 @@ export class MediaAppBlog1Stack extends cdk.Stack {
         },
       ],
     });
-  }
+
+    
+  }  
 }

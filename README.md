@@ -59,8 +59,14 @@ Architecture walkthrough:
    
    npm install
    ```
+2. **Bootstrap the stack**
+   ```bash
+   # Default AWS CLI credentials are used, otherwise use the –-profile parameter
+   # provide the <account-id> and <region> to deploy this stack 
+   cdk bootstrap aws://<account-id>/<region>
+   ```
 
-2. **Deploy the stack**
+3. **Deploy the stack**
    ```bash
    # Default AWS CLI credentials are used, otherwise use the –-profile parameter
    # personalNumber: the personal phone number of the business owner in E.164 format
