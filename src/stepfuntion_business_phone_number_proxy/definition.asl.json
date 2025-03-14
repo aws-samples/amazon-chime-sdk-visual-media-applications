@@ -1,1336 +1,1337 @@
 {
-  "Comment": "A description of my state machine",
-  "StartAt": "Init",
-  "States": {
-    "Init": {
-      "Type": "Pass",
-      "Next": "Check Call Flow: Customer, Owner, Scheduled",
-      "Assign": {
-        "QueueUrl.$": "$.QueueUrl",
-        "Call": {
-          "SipMediaApplicationId.$": "$.Event.CallDetails.SipMediaApplicationId",
-          "TransactionId.$": "$.Event.CallDetails.TransactionId",
-          "CallId.$": "$.Event.CallDetails.Participants[0].CallId",
-          "Direction.$": "$.Event.CallDetails.Participants[0].Direction",
-          "From.$": "$.Event.CallDetails.Participants[0].From",
-          "To.$": "$.Event.CallDetails.Participants[0].To"
-        },
-        "Environment": {
-          "IsProduction": "false",
-          "DynamoDBVoicemailsTable": "BusinessProxyVoicemails",
-          "BuckectName": "pstn-media-apps",
-          "VoicemailS3Prefix": "voicemails",
-          "PlaceOutboundCallLambdaArn": "arn:aws:lambda:us-east-1:471112581412:function:place_chime_outbound_call",
-          "EventBridgeExecutionRoleForPlaceOutboundCallLambdaArn": "arn:aws:iam::471112581412:role/EventBridgeExecuteLambdaRole"
-        },
-        "BusinessInfo": {
-          "BusinessName": "Your Business Name",
-          "BusinessPhoneNumber": "+1NPANXXXXXX",
-          "OwnerPersonalPhoneNumber": "+1NPANXXXXXX",
-          "WorkingHours": {
-            "StartTimeUTC": "13:00:00",
-            "EndTimeUTC": "13:00:00"
-          }
-        }
-      }
-    },
-    "Check Call Flow: Customer, Owner, Scheduled": {
-      "Type": "Choice",
-      "Choices": [
-        {
-          "And": [
-            {
-              "Variable": "$Call.Direction",
-              "StringEquals": "Inbound"
-            },
-            {
-              "Not": {
-                "Variable": "$Call.From",
-                "StringEqualsPath": "$BusinessInfo.OwnerPersonalPhoneNumber"
-              }
-            }
-          ],
-          "Next": "Compute In Business"
-        },
-        {
-          "And": [
-            {
-              "Variable": "$Call.Direction",
-              "StringEquals": "Inbound"
-            },
-            {
-              "Variable": "$Call.From",
-              "StringEqualsPath": "$BusinessInfo.OwnerPersonalPhoneNumber"
-            }
-          ],
-          "Next": "Play & Capture Owner Options Menu"
-        },
-        {
-          "Variable": "$Call.Direction",
-          "StringEquals": "Outbound",
-          "Next": "Owner Call Started",
-          "Assign": {
-            "EventArguments.$": "$.Event.ActionData.Parameters.Arguments"
-          }
-        }
-      ]
-    },
-    "Compute In Business": {
-      "Type": "Pass",
-      "Next": "Check Business Hours",
-      "QueryLanguage": "JSONata",
-      "Assign": {
-        "InBusiness": "{% ($millis() > $toMillis($substringBefore($now(),'T') & 'T' & $BusinessInfo.WorkingHours.StartTimeUTC)) and ($millis() < $toMillis($substringBefore($now(),'T') & 'T' & $BusinessInfo.WorkingHours.EndTimeUTC)) ? true : false %}"
-      }
-    },
-    "Owner Call Started": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
-      "Parameters": {
-        "QueueUrl.$": "$QueueUrl",
-        "MessageBody": {
-          "SchemaVersion": "1.0",
-          "Actions": [],
-          "TransactionAttributes": {
-            "WaitToken.$": "$$.Task.Token",
-            "QueueUrl.$": "$QueueUrl"
-          }
-        }
-      },
-      "TimeoutSeconds": 60,
-      "Next": "Bridge Scheduled Customer",
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "Next": "Check Error Message",
-          "ResultPath": "$.Error"
-        }
-      ]
-    },
-    "Bridge Scheduled Customer": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
-      "Parameters": {
-        "QueueUrl.$": "$QueueUrl",
-        "MessageBody": {
-          "SchemaVersion": "1.0",
-          "Actions": [
-            {
-              "Type": "Speak",
-              "Parameters": {
-                "CallId.$": "$Call.CallId",
-                "Text": "This is an scheduled call, please wait while we connect you to your customer.",
-                "Engine": "neural",
-                "LanguageCode": "en-US",
-                "TextType": "text",
-                "VoiceId": "Joanna"
-              }
-            },
-            {
-              "Type": "CallAndBridge",
-              "Parameters": {
-                "CallTimeoutSeconds": 60,
-                "CallerIdNumber.$": "$BusinessInfo.BusinessPhoneNumber",
-                "Endpoints": [
-                  {
-                    "BridgeEndpointType": "PSTN",
-                    "Uri.$": "States.Format('+1{}', $EventArguments.CustomerPhoneNumber)"
-                  }
-                ]
-              }
-            }
-          ],
-          "TransactionAttributes": {
-            "WaitToken.$": "$$.Task.Token",
-            "QueueUrl.$": "$QueueUrl"
-          }
-        }
-      },
-      "TimeoutSeconds": 60,
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "Next": "Check Scheduled Call Result",
-          "ResultPath": "$.Error"
-        }
-      ],
-      "Next": "Check Scheduled Call Result"
-    },
-    "Check Scheduled Call Result": {
-      "Type": "Choice",
-      "Choices": [
-        {
-          "Variable": "$.Error",
-          "IsPresent": true,
-          "Next": "Play Customer Scheduled Call Failed"
-        }
-      ],
-      "Default": "Wait For Scheduled Customer Hangup"
-    },
-    "Wait For Scheduled Customer Hangup": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
-      "Parameters": {
-        "QueueUrl.$": "$QueueUrl",
-        "MessageBody": {
-          "SchemaVersion": "1.0",
-          "Actions": [],
-          "TransactionAttributes": {
-            "WaitToken.$": "$$.Task.Token",
-            "QueueUrl.$": "$QueueUrl"
-          }
-        }
-      },
-      "TimeoutSeconds": 6000,
-      "Next": "Hangup Owner Scheduled Call",
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "ResultPath": "$.Error",
-          "Next": "Check Error Message"
-        }
-      ]
-    },
-    "Hangup Owner Scheduled Call": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
-      "Parameters": {
-        "QueueUrl.$": "$QueueUrl",
-        "MessageBody": {
-          "SchemaVersion": "1.0",
-          "Actions": [
-            {
-              "Type": "Hangup",
-              "Parameters": {
-                "CallId.$": "$Call.CallId",
-                "SipResponseCode": "0"
-              }
-            }
-          ],
-          "TransactionAttributes": {
-            "WaitToken.$": "$$.Task.Token",
-            "QueueUrl.$": "$QueueUrl"
-          }
-        }
-      },
-      "TimeoutSeconds": 6000,
-      "Next": "Check Error Message",
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "ResultPath": "$.Error",
-          "Next": "Check Error Message"
-        }
-      ]
-    },
-    "Play Customer Scheduled Call Failed": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
-      "Parameters": {
-        "QueueUrl.$": "$QueueUrl",
-        "MessageBody": {
-          "SchemaVersion": "1.0",
-          "Actions": [
-            {
-              "Type": "Speak",
-              "Parameters": {
-                "CallId.$": "$Call.CallId",
-                "Text.$": "States.Format('Call failed to connect, with error {}.', $.Error.Cause)",
-                "Engine": "neural",
-                "LanguageCode": "en-US",
-                "TextType": "text",
-                "VoiceId": "Joanna"
-              }
-            }
-          ],
-          "TransactionAttributes": {
-            "WaitToken.$": "$$.Task.Token",
-            "QueueUrl.$": "$QueueUrl"
-          }
-        }
-      },
-      "TimeoutSeconds": 60,
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "ResultPath": "$.Error",
-          "Next": "Check Error Message"
-        }
-      ],
-      "Next": "Ask to continue or hangup"
-    },
-    "Check Business Hours": {
-      "Type": "Choice",
-      "Choices": [
-        {
-          "Variable": "$InBusiness",
-          "BooleanEquals": true,
-          "Next": "Business Welcome Message"
-        }
-      ],
-      "Default": "Play After Hours Message"
-    },
-    "Play After Hours Message": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
-      "Parameters": {
-        "QueueUrl.$": "$QueueUrl",
-        "MessageBody": {
-          "SchemaVersion": "1.0",
-          "Actions": [
-            {
-              "Type": "Speak",
-              "Parameters": {
-                "CallId.$": "$Call.CallId",
-                "Text.$": "States.Format('We are sorry to inform you that: {}!, is close at this time. Stay in line to leave us a message after the beep or feel free to hang up at anytime.', $BusinessInfo.BusinessName)",
-                "Engine": "neural",
-                "LanguageCode": "en-US",
-                "TextType": "text",
-                "VoiceId": "Joanna"
-              }
-            }
-          ],
-          "TransactionAttributes": {
-            "WaitToken.$": "$$.Task.Token",
-            "QueueUrl.$": "$QueueUrl"
-          }
-        }
-      },
-      "TimeoutSeconds": 60,
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "Next": "Check Error Message",
-          "ResultPath": "$.Error"
-        }
-      ],
-      "Next": "Record Message"
-    },
-    "Record Message": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
-      "Parameters": {
-        "QueueUrl.$": "$QueueUrl",
-        "MessageBody": {
-          "SchemaVersion": "1.0",
-          "Actions": [
-            {
-              "Type": "PlayAudio",
-              "Parameters": {
-                "CallId.$": "$Call.CallId",
-                "ParticipantTag": "LEG-A",
-                "Repeat": "1",
-                "AudioSource": {
-                  "Type": "S3",
-                  "BucketName.$": "$Environment.BuckectName",
-                  "Key": "beep.wav"
+    "Comment": "A description of my state machine",
+    "StartAt": "Init",
+    "States": {
+        "Init": {
+            "Type": "Pass",
+            "Next": "Check Call Flow: Customer, Owner, Scheduled",
+            "Assign": {
+                "QueueUrl.$": "$.QueueUrl",
+                "Call": {
+                    "SipMediaApplicationId.$": "$.Event.CallDetails.SipMediaApplicationId",
+                    "TransactionId.$": "$.Event.CallDetails.TransactionId",
+                    "CallId.$": "$.Event.CallDetails.Participants[0].CallId",
+                    "Direction.$": "$.Event.CallDetails.Participants[0].Direction",
+                    "From.$": "$.Event.CallDetails.Participants[0].From",
+                    "To.$": "$.Event.CallDetails.Participants[0].To"
+                },
+                "Environment": {
+                    "IsProduction": "false",
+                    "DynamoDBVoicemailsTable": "BusinessProxyVoicemails",
+                    "BuckectName": "pstn-media-apps",
+                    "VoicemailS3Prefix": "business-phone-number-proxy/voicemails",
+                    "PlaceOutboundCallLambdaArn": "arn:aws:lambda:us-east-1:471112581412:function:place_chime_outbound_call",
+                    "EventBridgeExecutionRoleForPlaceOutboundCallLambdaArn": "arn:aws:iam::471112581412:role/EventBridgeExecuteLambdaRole"
+                },
+                "BusinessInfo": {
+                    "BusinessName": "Demo Business",
+                    "BusinessPhoneNumber": "+1NPAXXXXXXX",
+                    "OwnerPersonalPhoneNumber": "+1NPAXXXXXXX",
+                    "WorkingHours": {
+                        "StartTimeUTC": "08:00:00",
+                        "EndTimeUTC": "18:00:00",
+                        "UTCOffset": "-0400"
+                    }
                 }
-              }
-            },
-            {
-              "Type": "RecordAudio",
-              "Parameters": {
-                "CallId.$": "$Call.CallId",
-                "DurationInSeconds": "30",
-                "SilenceDurationInSeconds": 2,
-                "SilenceThreshold": 200,
-                "RecordingTerminators": [
-                  "#"
-                ],
-                "RecordingDestination": {
-                  "Type": "S3",
-                  "BucketName.$": "$Environment.BuckectName",
-                  "Prefix.$": "$Environment.VoicemailS3Prefix"
+            }
+        },
+        "Check Call Flow: Customer, Owner, Scheduled": {
+            "Type": "Choice",
+            "Choices": [
+                {
+                    "And": [
+                        {
+                            "Variable": "$Call.Direction",
+                            "StringEquals": "Inbound"
+                        },
+                        {
+                            "Not": {
+                                "Variable": "$Call.From",
+                                "StringEqualsPath": "$BusinessInfo.OwnerPersonalPhoneNumber"
+                            }
+                        }
+                    ],
+                    "Next": "Compute In Business"
+                },
+                {
+                    "And": [
+                        {
+                            "Variable": "$Call.Direction",
+                            "StringEquals": "Inbound"
+                        },
+                        {
+                            "Variable": "$Call.From",
+                            "StringEqualsPath": "$BusinessInfo.OwnerPersonalPhoneNumber"
+                        }
+                    ],
+                    "Next": "Play & Capture Owner Options Menu"
+                },
+                {
+                    "Variable": "$Call.Direction",
+                    "StringEquals": "Outbound",
+                    "Next": "Owner Call Started",
+                    "Assign": {
+                        "EventArguments.$": "$.Event.ActionData.Parameters.Arguments"
+                    }
                 }
-              }
-            }
-          ],
-          "TransactionAttributes": {
-            "WaitToken.$": "$$.Task.Token",
-            "QueueUrl.$": "$QueueUrl"
-          }
-        }
-      },
-      "TimeoutSeconds": 60,
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "Next": "Check Error Message",
-          "ResultPath": "$.Error"
-        }
-      ],
-      "Next": "DynamoDB PutItem"
-    },
-    "DynamoDB PutItem": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::dynamodb:putItem",
-      "Parameters": {
-        "TableName.$": "$Environment.DynamoDBVoicemailsTable",
-        "Item": {
-          "Tag": {
-            "S.$": "$BusinessInfo.BusinessPhoneNumber"
-          },
-          "BucketName": {
-            "S.$": "$.ActionData.RecordingDestination.BucketName"
-          },
-          "Key": {
-            "S.$": "$.ActionData.RecordingDestination.Key"
-          }
-        }
-      },
-      "Next": "Message Saved and End Call"
-    },
-    "Message Saved and End Call": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
-      "Parameters": {
-        "QueueUrl.$": "$QueueUrl",
-        "MessageBody": {
-          "SchemaVersion": "1.0",
-          "Actions": [
-            {
-              "Type": "Speak",
-              "Parameters": {
-                "CallId.$": "$Call.CallId",
-                "Text": "Your message has been saved! Bye",
-                "Engine": "neural",
-                "LanguageCode": "en-US",
-                "TextType": "text",
-                "VoiceId": "Joanna"
-              }
-            },
-            {
-              "Type": "Hangup",
-              "Parameters": {
-                "CallId.$": "$Call.CallId",
-                "SipResponseCode": "0"
-              }
-            }
-          ],
-          "TransactionAttributes": {
-            "WaitToken.$": "$$.Task.Token",
-            "QueueUrl.$": "$QueueUrl"
-          }
-        }
-      },
-      "TimeoutSeconds": 60,
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "Next": "Check Error Message",
-          "ResultPath": "$.Error"
-        }
-      ],
-      "Next": "Check Error Message"
-    },
-    "Business Welcome Message": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
-      "Parameters": {
-        "QueueUrl.$": "$QueueUrl",
-        "MessageBody": {
-          "SchemaVersion": "1.0",
-          "Actions": [
-            {
-              "Type": "Speak",
-              "Parameters": {
-                "CallId.$": "$Call.CallId",
-                "Text.$": "States.Format('Welcome to: {}! Please wait while I connect your call.', $BusinessInfo.BusinessName)",
-                "Engine": "neural",
-                "LanguageCode": "en-US",
-                "TextType": "text",
-                "VoiceId": "Joanna"
-              }
-            }
-          ],
-          "TransactionAttributes": {
-            "WaitToken.$": "$$.Task.Token",
-            "QueueUrl.$": "$QueueUrl"
-          }
-        }
-      },
-      "TimeoutSeconds": 60,
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "Next": "Check Error Message",
-          "ResultPath": "$.Error"
-        }
-      ],
-      "Next": "Bridge Owner"
-    },
-    "Bridge Owner": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
-      "Parameters": {
-        "QueueUrl.$": "$QueueUrl",
-        "MessageBody": {
-          "SchemaVersion": "1.0",
-          "Actions": [
-            {
-              "Type": "CallAndBridge",
-              "Parameters": {
-                "CallTimeoutSeconds": 30,
-                "CallerIdNumber.$": "$BusinessInfo.BusinessPhoneNumber",
-                "Endpoints": [
-                  {
-                    "BridgeEndpointType": "PSTN",
-                    "Uri.$": "$BusinessInfo.OwnerPersonalPhoneNumber"
-                  }
-                ]
-              }
-            }
-          ],
-          "TransactionAttributes": {
-            "WaitToken.$": "$$.Task.Token",
-            "QueueUrl.$": "$QueueUrl"
-          }
-        }
-      },
-      "TimeoutSeconds": 60,
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "Next": "Hangup Customer",
-          "ResultPath": "$.Error"
-        }
-      ],
-      "Next": "Wait For Customer Call Hangup"
-    },
-    "Hangup Owner": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
-      "Parameters": {
-        "QueueUrl.$": "$QueueUrl",
-        "MessageBody": {
-          "SchemaVersion": "1.0",
-          "Actions": [
-            {
-              "Type": "Hangup",
-              "Parameters": {
-                "ParticipantTag": "LEG-B",
-                "SipResponseCode": "0"
-              }
-            }
-          ],
-          "TransactionAttributes": {
-            "WaitToken.$": "$$.Task.Token",
-            "QueueUrl.$": "$QueueUrl"
-          }
-        }
-      },
-      "TimeoutSeconds": 6000,
-      "Next": "Check Error Message",
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "ResultPath": "$.Error",
-          "Next": "Check Error Message"
-        }
-      ]
-    },
-    "Wait For Customer Call Hangup": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
-      "Parameters": {
-        "QueueUrl.$": "$QueueUrl",
-        "MessageBody": {
-          "SchemaVersion": "1.0",
-          "Actions": [],
-          "TransactionAttributes": {
-            "WaitToken.$": "$$.Task.Token",
-            "QueueUrl.$": "$QueueUrl"
-          }
-        }
-      },
-      "TimeoutSeconds": 6000,
-      "Next": "Hangup Customer",
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "ResultPath": "$.Error",
-          "Next": "Hangup Owner"
-        }
-      ]
-    },
-    "Hangup Customer": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
-      "Parameters": {
-        "QueueUrl.$": "$QueueUrl",
-        "MessageBody": {
-          "SchemaVersion": "1.0",
-          "Actions": [
-            {
-              "Type": "Hangup",
-              "Parameters": {
-                "CallId.$": "$Call.CallId",
-                "SipResponseCode": "0"
-              }
-            }
-          ],
-          "TransactionAttributes": {
-            "WaitToken.$": "$$.Task.Token",
-            "QueueUrl.$": "$QueueUrl"
-          }
-        }
-      },
-      "TimeoutSeconds": 6000,
-      "Next": "Check Error Message",
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "ResultPath": "$.Error",
-          "Next": "Check Error Message"
-        }
-      ]
-    },
-    "Play & Capture Owner Options Menu": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
-      "Parameters": {
-        "QueueUrl.$": "$QueueUrl",
-        "MessageBody": {
-          "SchemaVersion": "1.0",
-          "Actions": [
-            {
-              "Type": "SpeakAndGetDigits",
-              "Parameters": {
-                "CallId.$": "$Call.CallId",
-                "SpeechParameters": {
-                  "Text": "Press 1 to call a customer now. Press 2, to schedule the call at a later time. Press 3 to listen your voicemails.",
-                  "Engine": "neural",
-                  "LanguageCode": "en-US",
-                  "TextType": "text",
-                  "VoiceId": "Joanna"
-                },
-                "FailureSpeechParameters": {
-                  "Text": "No input was captured",
-                  "Engine": "neural",
-                  "LanguageCode": "en-US",
-                  "TextType": "text",
-                  "VoiceId": "Joanna"
-                },
-                "MinNumberOfDigits": 0,
-                "MaxNumberOfDigits": 1,
-                "InBetweenDigitsDurationInMilliseconds": 1000,
-                "Repeat": 1,
-                "RepeatDurationInMilliseconds": 4000
-              }
-            }
-          ],
-          "TransactionAttributes": {
-            "WaitToken.$": "$$.Task.Token",
-            "QueueUrl.$": "$QueueUrl"
-          }
-        }
-      },
-      "TimeoutSeconds": 60,
-      "Next": "Fork Owner Selection",
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "Next": "Check Error Message",
-          "ResultPath": "$.Error"
-        }
-      ]
-    },
-    "Fork Owner Selection": {
-      "Type": "Choice",
-      "Choices": [
-        {
-          "Variable": "$.ActionData.ReceivedDigits",
-          "StringEquals": "3",
-          "Next": "DynamoDB Get Last Voicemail"
+            ]
         },
-        {
-          "Variable": "$.ActionData.ReceivedDigits",
-          "StringEquals": "1",
-          "Next": "Input Customer Phone Number for Call"
-        },
-        {
-          "Variable": "$.ActionData.ReceivedDigits",
-          "StringEquals": "2",
-          "Next": "Input Customer Phone Number Schedule"
-        }
-      ],
-      "Default": "Check Error Message"
-    },
-    "DynamoDB Get Last Voicemail": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::dynamodb:getItem",
-      "Parameters": {
-        "TableName.$": "$Environment.DynamoDBVoicemailsTable",
-        "Key": {
-          "Tag": {
-            "S.$": "$BusinessInfo.BusinessPhoneNumber"
-          }
-        }
-      },
-      "Next": "Check For Voicemail",
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "Next": "Check Error Message",
-          "ResultPath": "$.Error"
-        }
-      ]
-    },
-    "Check For Voicemail": {
-      "Type": "Choice",
-      "Choices": [
-        {
-          "Variable": "$.Item",
-          "IsPresent": true,
-          "Next": "Play Voicemail",
-          "Assign": {
-            "VoicemailBucketName.$": "$.Item.BucketName.S",
-            "VoicemailKey.$": "$.Item.Key.S"
-          }
-        }
-      ],
-      "Default": "Play Empty Voicemail Box"
-    },
-    "Input Customer Phone Number Schedule": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
-      "Parameters": {
-        "QueueUrl.$": "$QueueUrl",
-        "MessageBody": {
-          "SchemaVersion": "1.0",
-          "Actions": [
-            {
-              "Type": "SpeakAndGetDigits",
-              "Parameters": {
-                "CallId.$": "$Call.CallId",
-                "SpeechParameters": {
-                  "Text": "Now enter the 10 digits US number of your customer.",
-                  "Engine": "neural",
-                  "LanguageCode": "en-US",
-                  "TextType": "text",
-                  "VoiceId": "Joanna"
-                },
-                "FailureSpeechParameters": {
-                  "Text": "Invalid number captured, let's try again",
-                  "Engine": "neural",
-                  "LanguageCode": "en-US",
-                  "TextType": "text",
-                  "VoiceId": "Joanna"
-                },
-                "MinNumberOfDigits": 10,
-                "MaxNumberOfDigits": 10,
-                "InBetweenDigitsDurationInMilliseconds": 5000,
-                "Repeat": 2,
-                "RepeatDurationInMilliseconds": 5000
-              }
+        "Compute In Business": {
+            "Type": "Pass",
+            "Next": "Check Business Hours",
+            "QueryLanguage": "JSONata",
+            "Assign": {
+                "InBusiness": "{% (\n( $toMillis($now(\"[Y0001]-[M01]-[D01]T[H01]:[m01]:[s01]\",$BusinessInfo.WorkingHours.UTCOffset)) > $toMillis($now(\"[Y0001]-[M01]-[D01]\",$BusinessInfo.WorkingHours.UTCOffset) & \"T\" & $BusinessInfo.WorkingHours.StartTimeUTC) ) \nand \n( $toMillis($now(\"[Y0001]-[M01]-[D01]T[H01]:[m01]:[s01]\",$BusinessInfo.WorkingHours.UTCOffset)) < $toMillis($now(\"[Y0001]-[M01]-[D01]\",$BusinessInfo.WorkingHours.UTCOffset) & \"T\" & $BusinessInfo.WorkingHours.EndTimeUTC) ) \n) ? true : false %}"
             }
-          ],
-          "TransactionAttributes": {
-            "WaitToken.$": "$$.Task.Token",
-            "QueueUrl.$": "$QueueUrl"
-          }
-        }
-      },
-      "TimeoutSeconds": 60,
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "Next": "Check Error Message",
-          "ResultPath": "$.Error"
-        }
-      ],
-      "Next": "Input Callback Time",
-      "Assign": {
-        "CallbackNumber.$": "$.ActionData.ReceivedDigits"
-      }
-    },
-    "Play Voicemail": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
-      "Parameters": {
-        "QueueUrl.$": "$QueueUrl",
-        "MessageBody": {
-          "SchemaVersion": "1.0",
-          "Actions": [
-            {
-              "Type": "Speak",
-              "Parameters": {
-                "CallId.$": "$Call.CallId",
-                "Text": "Press the, start key, to interrupt playback at any time. Here is your voicemail.",
-                "Engine": "neural",
-                "LanguageCode": "en-US",
-                "TextType": "text",
-                "VoiceId": "Joanna"
-              }
-            },
-            {
-              "Type": "PlayAudio",
-              "Parameters": {
-                "CallId.$": "$Call.CallId",
-                "ParticipantTag": "LEG-A",
-                "PlaybackTerminators": [
-                  "*"
-                ],
-                "Repeat": "0",
-                "AudioSource": {
-                  "Type": "S3",
-                  "BucketName.$": "$VoicemailBucketName",
-                  "Key.$": "$VoicemailKey"
+        },
+        "Owner Call Started": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
+            "Parameters": {
+                "QueueUrl.$": "$QueueUrl",
+                "MessageBody": {
+                    "SchemaVersion": "1.0",
+                    "Actions": [],
+                    "TransactionAttributes": {
+                        "WaitToken.$": "$$.Task.Token",
+                        "QueueUrl.$": "$QueueUrl"
+                    }
                 }
-              }
-            }
-          ],
-          "TransactionAttributes": {
-            "WaitToken.$": "$$.Task.Token",
-            "QueueUrl.$": "$QueueUrl"
-          }
-        }
-      },
-      "TimeoutSeconds": 60,
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "Next": "Check Error Message",
-          "ResultPath": "$.Error"
-        }
-      ],
-      "Next": "Ask to continue or hangup"
-    },
-    "Play Empty Voicemail Box": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
-      "Parameters": {
-        "QueueUrl.$": "$QueueUrl",
-        "MessageBody": {
-          "SchemaVersion": "1.0",
-          "Actions": [
-            {
-              "Type": "Speak",
-              "Parameters": {
-                "CallId.$": "$Call.CallId",
-                "Text": "Your voicemail mailbox is empty",
-                "Engine": "neural",
-                "LanguageCode": "en-US",
-                "TextType": "text",
-                "VoiceId": "Joanna"
-              }
-            }
-          ],
-          "TransactionAttributes": {
-            "WaitToken.$": "$$.Task.Token",
-            "QueueUrl.$": "$QueueUrl"
-          }
-        }
-      },
-      "TimeoutSeconds": 60,
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "Next": "Check Error Message",
-          "ResultPath": "$.Error"
-        }
-      ],
-      "Next": "Ask to continue or hangup"
-    },
-    "Input Customer Phone Number for Call": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
-      "Parameters": {
-        "QueueUrl.$": "$QueueUrl",
-        "MessageBody": {
-          "SchemaVersion": "1.0",
-          "Actions": [
-            {
-              "Type": "SpeakAndGetDigits",
-              "Parameters": {
-                "CallId.$": "$Call.CallId",
-                "SpeechParameters": {
-                  "Text": "Now enter the 10 digits US number of your customer.",
-                  "Engine": "neural",
-                  "LanguageCode": "en-US",
-                  "TextType": "text",
-                  "VoiceId": "Joanna"
-                },
-                "FailureSpeechParameters": {
-                  "Text": "Invalid number captured, let's try again",
-                  "Engine": "neural",
-                  "LanguageCode": "en-US",
-                  "TextType": "text",
-                  "VoiceId": "Joanna"
-                },
-                "MinNumberOfDigits": 10,
-                "MaxNumberOfDigits": 10,
-                "InBetweenDigitsDurationInMilliseconds": 5000,
-                "Repeat": 2,
-                "RepeatDurationInMilliseconds": 5000
-              }
-            }
-          ],
-          "TransactionAttributes": {
-            "WaitToken.$": "$$.Task.Token",
-            "QueueUrl.$": "$QueueUrl"
-          }
-        }
-      },
-      "TimeoutSeconds": 60,
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "Next": "Bridge Customer",
-          "ResultPath": "$.Error"
-        }
-      ],
-      "Next": "Bridge Customer"
-    },
-    "Input Callback Time": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
-      "Parameters": {
-        "QueueUrl.$": "$QueueUrl",
-        "MessageBody": {
-          "SchemaVersion": "1.0",
-          "Actions": [
-            {
-              "Type": "SpeakAndGetDigits",
-              "Parameters": {
-                "CallId.$": "$Call.CallId",
-                "SpeechParameters": {
-                  "Text": "How many minutes from now you want that call to take place? For example, press one and five to get the call placed in 15 minutes from now.",
-                  "Engine": "neural",
-                  "LanguageCode": "en-US",
-                  "TextType": "text",
-                  "VoiceId": "Joanna"
-                },
-                "FailureSpeechParameters": {
-                  "Text": "No input was captured, lets try again",
-                  "Engine": "neural",
-                  "LanguageCode": "en-US",
-                  "TextType": "text",
-                  "VoiceId": "Joanna"
-                },
-                "MinNumberOfDigits": 1,
-                "MaxNumberOfDigits": 3,
-                "InBetweenDigitsDurationInMilliseconds": 3000,
-                "Repeat": 1,
-                "RepeatDurationInMilliseconds": 3000
-              }
-            }
-          ],
-          "TransactionAttributes": {
-            "WaitToken.$": "$$.Task.Token",
-            "QueueUrl.$": "$QueueUrl"
-          }
-        }
-      },
-      "TimeoutSeconds": 60,
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "Next": "Check Error Message",
-          "ResultPath": "$.Error"
-        }
-      ],
-      "Next": "Create One Time Schedule Callback",
-      "Assign": {
-        "CallbackMinutes.$": "$.ActionData.ReceivedDigits"
-      }
-    },
-    "Create One Time Schedule Callback": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::aws-sdk:scheduler:createSchedule",
-      "Next": "Confirm Scheduled Callback",
-      "QueryLanguage": "JSONata",
-      "Arguments": {
-        "FlexibleTimeWindow": {
-          "Mode": "OFF"
-        },
-        "Name": "{% $CallbackNumber & '_' & $string($millis()) %}",
-        "ScheduleExpression": "{% 'at(' & $fromMillis($millis() + ($number($CallbackMinutes) * 60 * 1000), '[Y0001]-[M01]-[D01]T[H01]:[m01]:[s01]') & ')'\n\n %}",
-        "Target": {
-          "Arn": "{% $Environment.PlaceOutboundCallLambdaArn %}",
-          "RoleArn": "{% $Environment.EventBridgeExecutionRoleForPlaceOutboundCallLambdaArn %}",
-          "Input": "{% $string({\n  'BusinessPhoneNumber': $Call.To,\n  'CustomerPhoneNumber': $CallbackNumber,\n  'BusinessOwnerPhoneNumber': $BusinessInfo.OwnerPersonalPhoneNumber,\n  'SipMediaApplicationId': $Call.SipMediaApplicationId\n})\n %}"
-        }
-      },
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "Next": "Check Error Message",
-          "Output": {
-            "Error": {
-              "Error": "Failed creating callback schedule",
-              "Cause": "Failed creating callback schedule"
-            }
-          }
-        }
-      ]
-    },
-    "Confirm Scheduled Callback": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
-      "Parameters": {
-        "QueueUrl.$": "$QueueUrl",
-        "MessageBody": {
-          "SchemaVersion": "1.0",
-          "Actions": [
-            {
-              "Type": "Speak",
-              "Parameters": {
-                "CallId.$": "$Call.CallId",
-                "Text": "Your callback has been sucessfully scheduled",
-                "Engine": "neural",
-                "LanguageCode": "en-US",
-                "TextType": "text",
-                "VoiceId": "Joanna"
-              }
-            }
-          ],
-          "TransactionAttributes": {
-            "WaitToken.$": "$$.Task.Token",
-            "QueueUrl.$": "$QueueUrl"
-          }
-        }
-      },
-      "TimeoutSeconds": 60,
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "Next": "Check Error Message",
-          "ResultPath": "$.Error"
-        }
-      ],
-      "Next": "Ask to continue or hangup"
-    },
-    "Bridge Customer": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
-      "Parameters": {
-        "QueueUrl.$": "$QueueUrl",
-        "MessageBody": {
-          "SchemaVersion": "1.0",
-          "Actions": [
-            {
-              "Type": "CallAndBridge",
-              "Parameters": {
-                "CallTimeoutSeconds": 60,
-                "CallerIdNumber.$": "$BusinessInfo.BusinessPhoneNumber",
-                "Endpoints": [
-                  {
-                    "BridgeEndpointType": "PSTN",
-                    "Uri.$": "States.Format('+1{}', $.ActionData.ReceivedDigits)"
-                  }
-                ]
-              }
-            }
-          ],
-          "TransactionAttributes": {
-            "WaitToken.$": "$$.Task.Token",
-            "QueueUrl.$": "$QueueUrl"
-          }
-        }
-      },
-      "TimeoutSeconds": 60,
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "Next": "Check Call Result",
-          "ResultPath": "$.Error"
-        }
-      ],
-      "Next": "Check Call Result"
-    },
-    "Check Call Result": {
-      "Type": "Choice",
-      "Choices": [
-        {
-          "Variable": "$.Error",
-          "IsPresent": true,
-          "Next": "Play Customer Call Failed"
-        }
-      ],
-      "Default": "Wait For Customer Hangup"
-    },
-    "Wait For Customer Hangup": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
-      "Parameters": {
-        "QueueUrl.$": "$QueueUrl",
-        "MessageBody": {
-          "SchemaVersion": "1.0",
-          "Actions": [],
-          "TransactionAttributes": {
-            "WaitToken.$": "$$.Task.Token",
-            "QueueUrl.$": "$QueueUrl"
-          }
-        }
-      },
-      "TimeoutSeconds": 6000,
-      "Next": "Ask to continue or hangup",
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "ResultPath": "$.Error",
-          "Next": "Check Error Message"
-        }
-      ]
-    },
-    "Play Customer Call Failed": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
-      "Parameters": {
-        "QueueUrl.$": "$QueueUrl",
-        "MessageBody": {
-          "SchemaVersion": "1.0",
-          "Actions": [
-            {
-              "Type": "Speak",
-              "Parameters": {
-                "CallId.$": "$Call.CallId",
-                "Text.$": "States.Format('Call failed to connect, with error {}.', $.Error.Cause)",
-                "Engine": "neural",
-                "LanguageCode": "en-US",
-                "TextType": "text",
-                "VoiceId": "Joanna"
-              }
-            }
-          ],
-          "TransactionAttributes": {
-            "WaitToken.$": "$$.Task.Token",
-            "QueueUrl.$": "$QueueUrl"
-          }
-        }
-      },
-      "TimeoutSeconds": 60,
-      "Next": "Ask to continue or hangup",
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "ResultPath": "$.Error",
-          "Next": "Check Error Message"
-        }
-      ]
-    },
-    "Check Error Message": {
-      "Type": "Choice",
-      "Choices": [
-        {
-          "Variable": "$.Error.Error",
-          "StringMatches": "HANGUP",
-          "Next": "Succeded"
-        },
-        {
-          "And": [
-            {
-              "Variable": "$.Error.Error",
-              "IsPresent": true
             },
-            {
-              "Variable": "$Environment.IsProduction",
-              "BooleanEquals": false
-            }
-          ],
-          "Next": "Play Error and Hangup"
-        }
-      ],
-      "Default": "Hangup"
-    },
-    "Hangup": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
-      "Parameters": {
-        "QueueUrl.$": "$QueueUrl",
-        "MessageBody": {
-          "SchemaVersion": "1.0",
-          "Actions": [
-            {
-              "Type": "Hangup",
-              "Parameters": {
-                "CallId.$": "$Call.CallId",
-                "SipResponseCode": "0"
-              }
-            }
-          ],
-          "TransactionAttributes": {
-            "WaitToken.$": "$$.Task.Token",
-            "QueueUrl.$": "$QueueUrl"
-          }
-        }
-      },
-      "TimeoutSeconds": 60,
-      "Next": "Reported Error",
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "ResultPath": "$.Error",
-          "Next": "Reported Error"
-        }
-      ]
-    },
-    "Reported Error": {
-      "Type": "Fail"
-    },
-    "Succeded": {
-      "Type": "Succeed"
-    },
-    "Ask to continue or hangup": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
-      "Parameters": {
-        "QueueUrl.$": "$QueueUrl",
-        "MessageBody": {
-          "SchemaVersion": "1.0",
-          "Actions": [
-            {
-              "Type": "SpeakAndGetDigits",
-              "Parameters": {
-                "CallId.$": "$Call.CallId",
-                "SpeechParameters": {
-                  "Text": "Press any key if you want to play or schedule another call, or feel free to hangup at any time",
-                  "Engine": "neural",
-                  "LanguageCode": "en-US",
-                  "TextType": "text",
-                  "VoiceId": "Joanna"
-                },
-                "FailureSpeechParameters": {
-                  "Text": "No input was captured",
-                  "Engine": "neural",
-                  "LanguageCode": "en-US",
-                  "TextType": "text",
-                  "VoiceId": "Joanna"
-                },
-                "MinNumberOfDigits": 0,
-                "MaxNumberOfDigits": 1,
-                "InBetweenDigitsDurationInMilliseconds": 1000,
-                "Repeat": 0,
-                "RepeatDurationInMilliseconds": 2000
-              }
-            }
-          ],
-          "TransactionAttributes": {
-            "WaitToken.$": "$$.Task.Token",
-            "QueueUrl.$": "$QueueUrl"
-          }
-        }
-      },
-      "TimeoutSeconds": 60,
-      "Next": "Check Input",
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "Next": "Check Error Message",
-          "ResultPath": "$.Error"
-        }
-      ]
-    },
-    "Check Input": {
-      "Type": "Choice",
-      "Choices": [
-        {
-          "Variable": "$.ActionData.ReceivedDigits",
-          "IsPresent": true,
-          "Next": "Play & Capture Owner Options Menu"
-        }
-      ],
-      "Default": "Check Error Message"
-    },
-    "Play Error and Hangup": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
-      "Parameters": {
-        "QueueUrl.$": "$QueueUrl",
-        "MessageBody": {
-          "SchemaVersion": "1.0",
-          "Actions": [
-            {
-              "Type": "Speak",
-              "Parameters": {
-                "CallId.$": "$Call.CallId",
-                "Text.$": "States.Format('Reported error caused by: {}', $.Error.Cause)",
-                "Engine": "neural",
-                "LanguageCode": "en-US",
-                "TextType": "text",
-                "VoiceId": "Joanna"
-              }
+            "TimeoutSeconds": 60,
+            "Next": "Bridge Scheduled Customer",
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Next": "Check Error Message",
+                    "ResultPath": "$.Error"
+                }
+            ]
+        },
+        "Bridge Scheduled Customer": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
+            "Parameters": {
+                "QueueUrl.$": "$QueueUrl",
+                "MessageBody": {
+                    "SchemaVersion": "1.0",
+                    "Actions": [
+                        {
+                            "Type": "Speak",
+                            "Parameters": {
+                                "CallId.$": "$Call.CallId",
+                                "Text": "This is an scheduled call, please wait while we connect you to your customer.",
+                                "Engine": "neural",
+                                "LanguageCode": "en-US",
+                                "TextType": "text",
+                                "VoiceId": "Joanna"
+                            }
+                        },
+                        {
+                            "Type": "CallAndBridge",
+                            "Parameters": {
+                                "CallTimeoutSeconds": 60,
+                                "CallerIdNumber.$": "$BusinessInfo.BusinessPhoneNumber",
+                                "Endpoints": [
+                                    {
+                                        "BridgeEndpointType": "PSTN",
+                                        "Uri.$": "States.Format('+1{}', $EventArguments.CustomerPhoneNumber)"
+                                    }
+                                ]
+                            }
+                        }
+                    ],
+                    "TransactionAttributes": {
+                        "WaitToken.$": "$$.Task.Token",
+                        "QueueUrl.$": "$QueueUrl"
+                    }
+                }
             },
-            {
-              "Type": "Hangup",
-              "Parameters": {
-                "CallId.$": "$Call.CallId",
-                "SipResponseCode": "0"
-              }
+            "TimeoutSeconds": 60,
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Next": "Check Scheduled Call Result",
+                    "ResultPath": "$.Error"
+                }
+            ],
+            "Next": "Check Scheduled Call Result"
+        },
+        "Check Scheduled Call Result": {
+            "Type": "Choice",
+            "Choices": [
+                {
+                    "Variable": "$.Error",
+                    "IsPresent": true,
+                    "Next": "Play Customer Scheduled Call Failed"
+                }
+            ],
+            "Default": "Wait For Scheduled Customer Hangup"
+        },
+        "Wait For Scheduled Customer Hangup": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
+            "Parameters": {
+                "QueueUrl.$": "$QueueUrl",
+                "MessageBody": {
+                    "SchemaVersion": "1.0",
+                    "Actions": [],
+                    "TransactionAttributes": {
+                        "WaitToken.$": "$$.Task.Token",
+                        "QueueUrl.$": "$QueueUrl"
+                    }
+                }
+            },
+            "TimeoutSeconds": 6000,
+            "Next": "Hangup Owner Scheduled Call",
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "ResultPath": "$.Error",
+                    "Next": "Check Error Message"
+                }
+            ]
+        },
+        "Hangup Owner Scheduled Call": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
+            "Parameters": {
+                "QueueUrl.$": "$QueueUrl",
+                "MessageBody": {
+                    "SchemaVersion": "1.0",
+                    "Actions": [
+                        {
+                            "Type": "Hangup",
+                            "Parameters": {
+                                "CallId.$": "$Call.CallId",
+                                "SipResponseCode": "0"
+                            }
+                        }
+                    ],
+                    "TransactionAttributes": {
+                        "WaitToken.$": "$$.Task.Token",
+                        "QueueUrl.$": "$QueueUrl"
+                    }
+                }
+            },
+            "TimeoutSeconds": 6000,
+            "Next": "Check Error Message",
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "ResultPath": "$.Error",
+                    "Next": "Check Error Message"
+                }
+            ]
+        },
+        "Play Customer Scheduled Call Failed": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
+            "Parameters": {
+                "QueueUrl.$": "$QueueUrl",
+                "MessageBody": {
+                    "SchemaVersion": "1.0",
+                    "Actions": [
+                        {
+                            "Type": "Speak",
+                            "Parameters": {
+                                "CallId.$": "$Call.CallId",
+                                "Text.$": "States.Format('Call failed to connect, with error {}.', $.Error.Cause)",
+                                "Engine": "neural",
+                                "LanguageCode": "en-US",
+                                "TextType": "text",
+                                "VoiceId": "Joanna"
+                            }
+                        }
+                    ],
+                    "TransactionAttributes": {
+                        "WaitToken.$": "$$.Task.Token",
+                        "QueueUrl.$": "$QueueUrl"
+                    }
+                }
+            },
+            "TimeoutSeconds": 60,
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "ResultPath": "$.Error",
+                    "Next": "Check Error Message"
+                }
+            ],
+            "Next": "Ask to continue or hangup"
+        },
+        "Check Business Hours": {
+            "Type": "Choice",
+            "Choices": [
+                {
+                    "Variable": "$InBusiness",
+                    "BooleanEquals": true,
+                    "Next": "Business Welcome Message"
+                }
+            ],
+            "Default": "Play After Hours Message"
+        },
+        "Play After Hours Message": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
+            "Parameters": {
+                "QueueUrl.$": "$QueueUrl",
+                "MessageBody": {
+                    "SchemaVersion": "1.0",
+                    "Actions": [
+                        {
+                            "Type": "Speak",
+                            "Parameters": {
+                                "CallId.$": "$Call.CallId",
+                                "Text.$": "States.Format('We are sorry to inform you that: {}!, is close at this time. Stay in line to leave us a message after the beep or feel free to hang up at anytime.', $BusinessInfo.BusinessName)",
+                                "Engine": "neural",
+                                "LanguageCode": "en-US",
+                                "TextType": "text",
+                                "VoiceId": "Joanna"
+                            }
+                        }
+                    ],
+                    "TransactionAttributes": {
+                        "WaitToken.$": "$$.Task.Token",
+                        "QueueUrl.$": "$QueueUrl"
+                    }
+                }
+            },
+            "TimeoutSeconds": 60,
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Next": "Check Error Message",
+                    "ResultPath": "$.Error"
+                }
+            ],
+            "Next": "Record Message"
+        },
+        "Record Message": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
+            "Parameters": {
+                "QueueUrl.$": "$QueueUrl",
+                "MessageBody": {
+                    "SchemaVersion": "1.0",
+                    "Actions": [
+                        {
+                            "Type": "PlayAudio",
+                            "Parameters": {
+                                "CallId.$": "$Call.CallId",
+                                "ParticipantTag": "LEG-A",
+                                "Repeat": "1",
+                                "AudioSource": {
+                                    "Type": "S3",
+                                    "BucketName": "pstn-media-apps",
+                                    "Key": "beep.wav"
+                                }
+                            }
+                        },
+                        {
+                            "Type": "RecordAudio",
+                            "Parameters": {
+                                "CallId.$": "$Call.CallId",
+                                "DurationInSeconds": "30",
+                                "SilenceDurationInSeconds": 2,
+                                "SilenceThreshold": 200,
+                                "RecordingTerminators": [
+                                    "#"
+                                ],
+                                "RecordingDestination": {
+                                    "Type": "S3",
+                                    "BucketName.$": "$Environment.BuckectName",
+                                    "Prefix.$": "$Environment.VoicemailS3Prefix"
+                                }
+                            }
+                        }
+                    ],
+                    "TransactionAttributes": {
+                        "WaitToken.$": "$$.Task.Token",
+                        "QueueUrl.$": "$QueueUrl"
+                    }
+                }
+            },
+            "TimeoutSeconds": 60,
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Next": "Check Error Message",
+                    "ResultPath": "$.Error"
+                }
+            ],
+            "Next": "DynamoDB PutItem"
+        },
+        "DynamoDB PutItem": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::dynamodb:putItem",
+            "Parameters": {
+                "TableName.$": "$Environment.DynamoDBVoicemailsTable",
+                "Item": {
+                    "Tag": {
+                        "S.$": "$BusinessInfo.BusinessPhoneNumber"
+                    },
+                    "BucketName": {
+                        "S.$": "$.ActionData.RecordingDestination.BucketName"
+                    },
+                    "Key": {
+                        "S.$": "$.ActionData.RecordingDestination.Key"
+                    }
+                }
+            },
+            "Next": "Message Saved and End Call"
+        },
+        "Message Saved and End Call": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
+            "Parameters": {
+                "QueueUrl.$": "$QueueUrl",
+                "MessageBody": {
+                    "SchemaVersion": "1.0",
+                    "Actions": [
+                        {
+                            "Type": "Speak",
+                            "Parameters": {
+                                "CallId.$": "$Call.CallId",
+                                "Text": "Your message has been saved! Bye",
+                                "Engine": "neural",
+                                "LanguageCode": "en-US",
+                                "TextType": "text",
+                                "VoiceId": "Joanna"
+                            }
+                        },
+                        {
+                            "Type": "Hangup",
+                            "Parameters": {
+                                "CallId.$": "$Call.CallId",
+                                "SipResponseCode": "0"
+                            }
+                        }
+                    ],
+                    "TransactionAttributes": {
+                        "WaitToken.$": "$$.Task.Token",
+                        "QueueUrl.$": "$QueueUrl"
+                    }
+                }
+            },
+            "TimeoutSeconds": 60,
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Next": "Check Error Message",
+                    "ResultPath": "$.Error"
+                }
+            ],
+            "Next": "Check Error Message"
+        },
+        "Business Welcome Message": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
+            "Parameters": {
+                "QueueUrl.$": "$QueueUrl",
+                "MessageBody": {
+                    "SchemaVersion": "1.0",
+                    "Actions": [
+                        {
+                            "Type": "Speak",
+                            "Parameters": {
+                                "CallId.$": "$Call.CallId",
+                                "Text.$": "States.Format('Welcome to: {}! Please wait while I connect your call.', $BusinessInfo.BusinessName)",
+                                "Engine": "neural",
+                                "LanguageCode": "en-US",
+                                "TextType": "text",
+                                "VoiceId": "Joanna"
+                            }
+                        }
+                    ],
+                    "TransactionAttributes": {
+                        "WaitToken.$": "$$.Task.Token",
+                        "QueueUrl.$": "$QueueUrl"
+                    }
+                }
+            },
+            "TimeoutSeconds": 60,
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Next": "Check Error Message",
+                    "ResultPath": "$.Error"
+                }
+            ],
+            "Next": "Bridge Owner"
+        },
+        "Bridge Owner": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
+            "Parameters": {
+                "QueueUrl.$": "$QueueUrl",
+                "MessageBody": {
+                    "SchemaVersion": "1.0",
+                    "Actions": [
+                        {
+                            "Type": "CallAndBridge",
+                            "Parameters": {
+                                "CallTimeoutSeconds": 30,
+                                "CallerIdNumber.$": "$BusinessInfo.BusinessPhoneNumber",
+                                "Endpoints": [
+                                    {
+                                        "BridgeEndpointType": "PSTN",
+                                        "Uri.$": "$BusinessInfo.OwnerPersonalPhoneNumber"
+                                    }
+                                ]
+                            }
+                        }
+                    ],
+                    "TransactionAttributes": {
+                        "WaitToken.$": "$$.Task.Token",
+                        "QueueUrl.$": "$QueueUrl"
+                    }
+                }
+            },
+            "TimeoutSeconds": 60,
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Next": "Hangup Customer",
+                    "ResultPath": "$.Error"
+                }
+            ],
+            "Next": "Wait For Customer Call Hangup"
+        },
+        "Hangup Owner": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
+            "Parameters": {
+                "QueueUrl.$": "$QueueUrl",
+                "MessageBody": {
+                    "SchemaVersion": "1.0",
+                    "Actions": [
+                        {
+                            "Type": "Hangup",
+                            "Parameters": {
+                                "ParticipantTag": "LEG-B",
+                                "SipResponseCode": "0"
+                            }
+                        }
+                    ],
+                    "TransactionAttributes": {
+                        "WaitToken.$": "$$.Task.Token",
+                        "QueueUrl.$": "$QueueUrl"
+                    }
+                }
+            },
+            "TimeoutSeconds": 6000,
+            "Next": "Check Error Message",
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "ResultPath": "$.Error",
+                    "Next": "Check Error Message"
+                }
+            ]
+        },
+        "Wait For Customer Call Hangup": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
+            "Parameters": {
+                "QueueUrl.$": "$QueueUrl",
+                "MessageBody": {
+                    "SchemaVersion": "1.0",
+                    "Actions": [],
+                    "TransactionAttributes": {
+                        "WaitToken.$": "$$.Task.Token",
+                        "QueueUrl.$": "$QueueUrl"
+                    }
+                }
+            },
+            "TimeoutSeconds": 6000,
+            "Next": "Hangup Customer",
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "ResultPath": "$.Error",
+                    "Next": "Hangup Owner"
+                }
+            ]
+        },
+        "Hangup Customer": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
+            "Parameters": {
+                "QueueUrl.$": "$QueueUrl",
+                "MessageBody": {
+                    "SchemaVersion": "1.0",
+                    "Actions": [
+                        {
+                            "Type": "Hangup",
+                            "Parameters": {
+                                "CallId.$": "$Call.CallId",
+                                "SipResponseCode": "0"
+                            }
+                        }
+                    ],
+                    "TransactionAttributes": {
+                        "WaitToken.$": "$$.Task.Token",
+                        "QueueUrl.$": "$QueueUrl"
+                    }
+                }
+            },
+            "TimeoutSeconds": 6000,
+            "Next": "Check Error Message",
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "ResultPath": "$.Error",
+                    "Next": "Check Error Message"
+                }
+            ]
+        },
+        "Play & Capture Owner Options Menu": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
+            "Parameters": {
+                "QueueUrl.$": "$QueueUrl",
+                "MessageBody": {
+                    "SchemaVersion": "1.0",
+                    "Actions": [
+                        {
+                            "Type": "SpeakAndGetDigits",
+                            "Parameters": {
+                                "CallId.$": "$Call.CallId",
+                                "SpeechParameters": {
+                                    "Text": "Press 1 to call a customer now. Press 2, to schedule the call at a later time. Press 3 to listen your voicemails.",
+                                    "Engine": "neural",
+                                    "LanguageCode": "en-US",
+                                    "TextType": "text",
+                                    "VoiceId": "Joanna"
+                                },
+                                "FailureSpeechParameters": {
+                                    "Text": "No input was captured",
+                                    "Engine": "neural",
+                                    "LanguageCode": "en-US",
+                                    "TextType": "text",
+                                    "VoiceId": "Joanna"
+                                },
+                                "MinNumberOfDigits": 0,
+                                "MaxNumberOfDigits": 1,
+                                "InBetweenDigitsDurationInMilliseconds": 1000,
+                                "Repeat": 1,
+                                "RepeatDurationInMilliseconds": 4000
+                            }
+                        }
+                    ],
+                    "TransactionAttributes": {
+                        "WaitToken.$": "$$.Task.Token",
+                        "QueueUrl.$": "$QueueUrl"
+                    }
+                }
+            },
+            "TimeoutSeconds": 60,
+            "Next": "Fork Owner Selection",
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Next": "Check Error Message",
+                    "ResultPath": "$.Error"
+                }
+            ]
+        },
+        "Fork Owner Selection": {
+            "Type": "Choice",
+            "Choices": [
+                {
+                    "Variable": "$.ActionData.ReceivedDigits",
+                    "StringEquals": "3",
+                    "Next": "DynamoDB Get Last Voicemail"
+                },
+                {
+                    "Variable": "$.ActionData.ReceivedDigits",
+                    "StringEquals": "1",
+                    "Next": "Input Customer Phone Number for Call"
+                },
+                {
+                    "Variable": "$.ActionData.ReceivedDigits",
+                    "StringEquals": "2",
+                    "Next": "Input Customer Phone Number Schedule"
+                }
+            ],
+            "Default": "Check Error Message"
+        },
+        "DynamoDB Get Last Voicemail": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::dynamodb:getItem",
+            "Parameters": {
+                "TableName.$": "$Environment.DynamoDBVoicemailsTable",
+                "Key": {
+                    "Tag": {
+                        "S.$": "$BusinessInfo.BusinessPhoneNumber"
+                    }
+                }
+            },
+            "Next": "Check For Voicemail",
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Next": "Check Error Message",
+                    "ResultPath": "$.Error"
+                }
+            ]
+        },
+        "Check For Voicemail": {
+            "Type": "Choice",
+            "Choices": [
+                {
+                    "Variable": "$.Item",
+                    "IsPresent": true,
+                    "Next": "Play Voicemail",
+                    "Assign": {
+                        "VoicemailBucketName.$": "$.Item.BucketName.S",
+                        "VoicemailKey.$": "$.Item.Key.S"
+                    }
+                }
+            ],
+            "Default": "Play Empty Voicemail Box"
+        },
+        "Input Customer Phone Number Schedule": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
+            "Parameters": {
+                "QueueUrl.$": "$QueueUrl",
+                "MessageBody": {
+                    "SchemaVersion": "1.0",
+                    "Actions": [
+                        {
+                            "Type": "SpeakAndGetDigits",
+                            "Parameters": {
+                                "CallId.$": "$Call.CallId",
+                                "SpeechParameters": {
+                                    "Text": "Now enter the 10 digits US number of your customer.",
+                                    "Engine": "neural",
+                                    "LanguageCode": "en-US",
+                                    "TextType": "text",
+                                    "VoiceId": "Joanna"
+                                },
+                                "FailureSpeechParameters": {
+                                    "Text": "Invalid number captured, let's try again",
+                                    "Engine": "neural",
+                                    "LanguageCode": "en-US",
+                                    "TextType": "text",
+                                    "VoiceId": "Joanna"
+                                },
+                                "MinNumberOfDigits": 10,
+                                "MaxNumberOfDigits": 10,
+                                "InBetweenDigitsDurationInMilliseconds": 5000,
+                                "Repeat": 2,
+                                "RepeatDurationInMilliseconds": 5000
+                            }
+                        }
+                    ],
+                    "TransactionAttributes": {
+                        "WaitToken.$": "$$.Task.Token",
+                        "QueueUrl.$": "$QueueUrl"
+                    }
+                }
+            },
+            "TimeoutSeconds": 60,
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Next": "Check Error Message",
+                    "ResultPath": "$.Error"
+                }
+            ],
+            "Next": "Input Callback Time",
+            "Assign": {
+                "CallbackNumber.$": "$.ActionData.ReceivedDigits"
             }
-          ],
-          "TransactionAttributes": {
-            "WaitToken.$": "$$.Task.Token",
-            "QueueUrl.$": "$QueueUrl"
-          }
+        },
+        "Play Voicemail": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
+            "Parameters": {
+                "QueueUrl.$": "$QueueUrl",
+                "MessageBody": {
+                    "SchemaVersion": "1.0",
+                    "Actions": [
+                        {
+                            "Type": "Speak",
+                            "Parameters": {
+                                "CallId.$": "$Call.CallId",
+                                "Text": "Press the, start key, to interrupt playback at any time. Here is your voicemail.",
+                                "Engine": "neural",
+                                "LanguageCode": "en-US",
+                                "TextType": "text",
+                                "VoiceId": "Joanna"
+                            }
+                        },
+                        {
+                            "Type": "PlayAudio",
+                            "Parameters": {
+                                "CallId.$": "$Call.CallId",
+                                "ParticipantTag": "LEG-A",
+                                "PlaybackTerminators": [
+                                    "*"
+                                ],
+                                "Repeat": "0",
+                                "AudioSource": {
+                                    "Type": "S3",
+                                    "BucketName.$": "$VoicemailBucketName",
+                                    "Key.$": "$VoicemailKey"
+                                }
+                            }
+                        }
+                    ],
+                    "TransactionAttributes": {
+                        "WaitToken.$": "$$.Task.Token",
+                        "QueueUrl.$": "$QueueUrl"
+                    }
+                }
+            },
+            "TimeoutSeconds": 60,
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Next": "Check Error Message",
+                    "ResultPath": "$.Error"
+                }
+            ],
+            "Next": "Ask to continue or hangup"
+        },
+        "Play Empty Voicemail Box": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
+            "Parameters": {
+                "QueueUrl.$": "$QueueUrl",
+                "MessageBody": {
+                    "SchemaVersion": "1.0",
+                    "Actions": [
+                        {
+                            "Type": "Speak",
+                            "Parameters": {
+                                "CallId.$": "$Call.CallId",
+                                "Text": "Your voicemail mailbox is empty",
+                                "Engine": "neural",
+                                "LanguageCode": "en-US",
+                                "TextType": "text",
+                                "VoiceId": "Joanna"
+                            }
+                        }
+                    ],
+                    "TransactionAttributes": {
+                        "WaitToken.$": "$$.Task.Token",
+                        "QueueUrl.$": "$QueueUrl"
+                    }
+                }
+            },
+            "TimeoutSeconds": 60,
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Next": "Check Error Message",
+                    "ResultPath": "$.Error"
+                }
+            ],
+            "Next": "Ask to continue or hangup"
+        },
+        "Input Customer Phone Number for Call": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
+            "Parameters": {
+                "QueueUrl.$": "$QueueUrl",
+                "MessageBody": {
+                    "SchemaVersion": "1.0",
+                    "Actions": [
+                        {
+                            "Type": "SpeakAndGetDigits",
+                            "Parameters": {
+                                "CallId.$": "$Call.CallId",
+                                "SpeechParameters": {
+                                    "Text": "Now enter the 10 digits US number of your customer.",
+                                    "Engine": "neural",
+                                    "LanguageCode": "en-US",
+                                    "TextType": "text",
+                                    "VoiceId": "Joanna"
+                                },
+                                "FailureSpeechParameters": {
+                                    "Text": "Invalid number captured, let's try again",
+                                    "Engine": "neural",
+                                    "LanguageCode": "en-US",
+                                    "TextType": "text",
+                                    "VoiceId": "Joanna"
+                                },
+                                "MinNumberOfDigits": 10,
+                                "MaxNumberOfDigits": 10,
+                                "InBetweenDigitsDurationInMilliseconds": 5000,
+                                "Repeat": 2,
+                                "RepeatDurationInMilliseconds": 5000
+                            }
+                        }
+                    ],
+                    "TransactionAttributes": {
+                        "WaitToken.$": "$$.Task.Token",
+                        "QueueUrl.$": "$QueueUrl"
+                    }
+                }
+            },
+            "TimeoutSeconds": 60,
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Next": "Bridge Customer",
+                    "ResultPath": "$.Error"
+                }
+            ],
+            "Next": "Bridge Customer"
+        },
+        "Input Callback Time": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
+            "Parameters": {
+                "QueueUrl.$": "$QueueUrl",
+                "MessageBody": {
+                    "SchemaVersion": "1.0",
+                    "Actions": [
+                        {
+                            "Type": "SpeakAndGetDigits",
+                            "Parameters": {
+                                "CallId.$": "$Call.CallId",
+                                "SpeechParameters": {
+                                    "Text": "How many minutes from now you want that call to take place? For example, press one and five to get the call placed in 15 minutes from now.",
+                                    "Engine": "neural",
+                                    "LanguageCode": "en-US",
+                                    "TextType": "text",
+                                    "VoiceId": "Joanna"
+                                },
+                                "FailureSpeechParameters": {
+                                    "Text": "No input was captured, lets try again",
+                                    "Engine": "neural",
+                                    "LanguageCode": "en-US",
+                                    "TextType": "text",
+                                    "VoiceId": "Joanna"
+                                },
+                                "MinNumberOfDigits": 1,
+                                "MaxNumberOfDigits": 3,
+                                "InBetweenDigitsDurationInMilliseconds": 3000,
+                                "Repeat": 1,
+                                "RepeatDurationInMilliseconds": 3000
+                            }
+                        }
+                    ],
+                    "TransactionAttributes": {
+                        "WaitToken.$": "$$.Task.Token",
+                        "QueueUrl.$": "$QueueUrl"
+                    }
+                }
+            },
+            "TimeoutSeconds": 60,
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Next": "Check Error Message",
+                    "ResultPath": "$.Error"
+                }
+            ],
+            "Next": "Create One Time Schedule Callback",
+            "Assign": {
+                "CallbackMinutes.$": "$.ActionData.ReceivedDigits"
+            }
+        },
+        "Create One Time Schedule Callback": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:scheduler:createSchedule",
+            "Next": "Confirm Scheduled Callback",
+            "QueryLanguage": "JSONata",
+            "Arguments": {
+                "FlexibleTimeWindow": {
+                    "Mode": "OFF"
+                },
+                "Name": "{% $CallbackNumber & '_' & $string($millis()) %}",
+                "ScheduleExpression": "{% 'at(' & $fromMillis($millis() + ($number($CallbackMinutes) * 60 * 1000), '[Y0001]-[M01]-[D01]T[H01]:[m01]:[s01]') & ')'\n\n %}",
+                "Target": {
+                    "Arn": "{% $Environment.PlaceOutboundCallLambdaArn %}",
+                    "RoleArn": "{% $Environment.EventBridgeExecutionRoleForPlaceOutboundCallLambdaArn %}",
+                    "Input": "{% $string({\n  'BusinessPhoneNumber': $Call.To,\n  'CustomerPhoneNumber': $CallbackNumber,\n  'BusinessOwnerPhoneNumber': $BusinessInfo.OwnerPersonalPhoneNumber,\n  'SipMediaApplicationId': $Call.SipMediaApplicationId\n})\n %}"
+                }
+            },
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Next": "Check Error Message",
+                    "Output": {
+                        "Error": {
+                            "Error": "Failed creating callback schedule",
+                            "Cause": "Failed creating callback schedule"
+                        }
+                    }
+                }
+            ]
+        },
+        "Confirm Scheduled Callback": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
+            "Parameters": {
+                "QueueUrl.$": "$QueueUrl",
+                "MessageBody": {
+                    "SchemaVersion": "1.0",
+                    "Actions": [
+                        {
+                            "Type": "Speak",
+                            "Parameters": {
+                                "CallId.$": "$Call.CallId",
+                                "Text": "Your callback has been sucessfully scheduled",
+                                "Engine": "neural",
+                                "LanguageCode": "en-US",
+                                "TextType": "text",
+                                "VoiceId": "Joanna"
+                            }
+                        }
+                    ],
+                    "TransactionAttributes": {
+                        "WaitToken.$": "$$.Task.Token",
+                        "QueueUrl.$": "$QueueUrl"
+                    }
+                }
+            },
+            "TimeoutSeconds": 60,
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Next": "Check Error Message",
+                    "ResultPath": "$.Error"
+                }
+            ],
+            "Next": "Ask to continue or hangup"
+        },
+        "Bridge Customer": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
+            "Parameters": {
+                "QueueUrl.$": "$QueueUrl",
+                "MessageBody": {
+                    "SchemaVersion": "1.0",
+                    "Actions": [
+                        {
+                            "Type": "CallAndBridge",
+                            "Parameters": {
+                                "CallTimeoutSeconds": 60,
+                                "CallerIdNumber.$": "$BusinessInfo.BusinessPhoneNumber",
+                                "Endpoints": [
+                                    {
+                                        "BridgeEndpointType": "PSTN",
+                                        "Uri.$": "States.Format('+1{}', $.ActionData.ReceivedDigits)"
+                                    }
+                                ]
+                            }
+                        }
+                    ],
+                    "TransactionAttributes": {
+                        "WaitToken.$": "$$.Task.Token",
+                        "QueueUrl.$": "$QueueUrl"
+                    }
+                }
+            },
+            "TimeoutSeconds": 60,
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Next": "Check Call Result",
+                    "ResultPath": "$.Error"
+                }
+            ],
+            "Next": "Check Call Result"
+        },
+        "Check Call Result": {
+            "Type": "Choice",
+            "Choices": [
+                {
+                    "Variable": "$.Error",
+                    "IsPresent": true,
+                    "Next": "Play Customer Call Failed"
+                }
+            ],
+            "Default": "Wait For Customer Hangup"
+        },
+        "Wait For Customer Hangup": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
+            "Parameters": {
+                "QueueUrl.$": "$QueueUrl",
+                "MessageBody": {
+                    "SchemaVersion": "1.0",
+                    "Actions": [],
+                    "TransactionAttributes": {
+                        "WaitToken.$": "$$.Task.Token",
+                        "QueueUrl.$": "$QueueUrl"
+                    }
+                }
+            },
+            "TimeoutSeconds": 6000,
+            "Next": "Ask to continue or hangup",
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "ResultPath": "$.Error",
+                    "Next": "Check Error Message"
+                }
+            ]
+        },
+        "Play Customer Call Failed": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
+            "Parameters": {
+                "QueueUrl.$": "$QueueUrl",
+                "MessageBody": {
+                    "SchemaVersion": "1.0",
+                    "Actions": [
+                        {
+                            "Type": "Speak",
+                            "Parameters": {
+                                "CallId.$": "$Call.CallId",
+                                "Text.$": "States.Format('Call failed to connect, with error {}.', $.Error.Cause)",
+                                "Engine": "neural",
+                                "LanguageCode": "en-US",
+                                "TextType": "text",
+                                "VoiceId": "Joanna"
+                            }
+                        }
+                    ],
+                    "TransactionAttributes": {
+                        "WaitToken.$": "$$.Task.Token",
+                        "QueueUrl.$": "$QueueUrl"
+                    }
+                }
+            },
+            "TimeoutSeconds": 60,
+            "Next": "Ask to continue or hangup",
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "ResultPath": "$.Error",
+                    "Next": "Check Error Message"
+                }
+            ]
+        },
+        "Check Error Message": {
+            "Type": "Choice",
+            "Choices": [
+                {
+                    "Variable": "$.Error.Error",
+                    "StringMatches": "HANGUP",
+                    "Next": "Succeded"
+                },
+                {
+                    "And": [
+                        {
+                            "Variable": "$.Error.Error",
+                            "IsPresent": true
+                        },
+                        {
+                            "Variable": "$Environment.IsProduction",
+                            "BooleanEquals": false
+                        }
+                    ],
+                    "Next": "Play Error and Hangup"
+                }
+            ],
+            "Default": "Hangup"
+        },
+        "Hangup": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
+            "Parameters": {
+                "QueueUrl.$": "$QueueUrl",
+                "MessageBody": {
+                    "SchemaVersion": "1.0",
+                    "Actions": [
+                        {
+                            "Type": "Hangup",
+                            "Parameters": {
+                                "CallId.$": "$Call.CallId",
+                                "SipResponseCode": "0"
+                            }
+                        }
+                    ],
+                    "TransactionAttributes": {
+                        "WaitToken.$": "$$.Task.Token",
+                        "QueueUrl.$": "$QueueUrl"
+                    }
+                }
+            },
+            "TimeoutSeconds": 60,
+            "Next": "Reported Error",
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "ResultPath": "$.Error",
+                    "Next": "Reported Error"
+                }
+            ]
+        },
+        "Reported Error": {
+            "Type": "Fail"
+        },
+        "Succeded": {
+            "Type": "Succeed"
+        },
+        "Ask to continue or hangup": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
+            "Parameters": {
+                "QueueUrl.$": "$QueueUrl",
+                "MessageBody": {
+                    "SchemaVersion": "1.0",
+                    "Actions": [
+                        {
+                            "Type": "SpeakAndGetDigits",
+                            "Parameters": {
+                                "CallId.$": "$Call.CallId",
+                                "SpeechParameters": {
+                                    "Text": "Press any key if you want to play or schedule another call, or feel free to hangup at any time",
+                                    "Engine": "neural",
+                                    "LanguageCode": "en-US",
+                                    "TextType": "text",
+                                    "VoiceId": "Joanna"
+                                },
+                                "FailureSpeechParameters": {
+                                    "Text": "No input was captured",
+                                    "Engine": "neural",
+                                    "LanguageCode": "en-US",
+                                    "TextType": "text",
+                                    "VoiceId": "Joanna"
+                                },
+                                "MinNumberOfDigits": 0,
+                                "MaxNumberOfDigits": 1,
+                                "InBetweenDigitsDurationInMilliseconds": 1000,
+                                "Repeat": 0,
+                                "RepeatDurationInMilliseconds": 2000
+                            }
+                        }
+                    ],
+                    "TransactionAttributes": {
+                        "WaitToken.$": "$$.Task.Token",
+                        "QueueUrl.$": "$QueueUrl"
+                    }
+                }
+            },
+            "TimeoutSeconds": 60,
+            "Next": "Check Input",
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Next": "Check Error Message",
+                    "ResultPath": "$.Error"
+                }
+            ]
+        },
+        "Check Input": {
+            "Type": "Choice",
+            "Choices": [
+                {
+                    "Variable": "$.ActionData.ReceivedDigits",
+                    "IsPresent": true,
+                    "Next": "Play & Capture Owner Options Menu"
+                }
+            ],
+            "Default": "Check Error Message"
+        },
+        "Play Error and Hangup": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
+            "Parameters": {
+                "QueueUrl.$": "$QueueUrl",
+                "MessageBody": {
+                    "SchemaVersion": "1.0",
+                    "Actions": [
+                        {
+                            "Type": "Speak",
+                            "Parameters": {
+                                "CallId.$": "$Call.CallId",
+                                "Text.$": "States.Format('Reported error caused by: {}', $.Error.Cause)",
+                                "Engine": "neural",
+                                "LanguageCode": "en-US",
+                                "TextType": "text",
+                                "VoiceId": "Joanna"
+                            }
+                        },
+                        {
+                            "Type": "Hangup",
+                            "Parameters": {
+                                "CallId.$": "$Call.CallId",
+                                "SipResponseCode": "0"
+                            }
+                        }
+                    ],
+                    "TransactionAttributes": {
+                        "WaitToken.$": "$$.Task.Token",
+                        "QueueUrl.$": "$QueueUrl"
+                    }
+                }
+            },
+            "TimeoutSeconds": 60,
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "ResultPath": "$.Error",
+                    "Next": "Reported Error"
+                }
+            ],
+            "Next": "Reported Error"
         }
-      },
-      "TimeoutSeconds": 60,
-      "Catch": [
-        {
-          "ErrorEquals": [
-            "States.ALL"
-          ],
-          "ResultPath": "$.Error",
-          "Next": "Reported Error"
-        }
-      ],
-      "Next": "Reported Error"
     }
-  }
 }
