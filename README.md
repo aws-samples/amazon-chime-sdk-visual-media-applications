@@ -11,7 +11,7 @@ The solution provides two main components:
 
 ## Sample telephony application
 
-This application allows business owners manage customer calls through a dedicated business phone number. This solution helps small business owners separate personal and business communications while managing all calls from their existing phone. For more information check this related [Blog](https://aws-blogs-prod.amazon.com/messaging-and-targeting/). 
+This application allows business owners manage customer calls through a dedicated business phone number. This solution helps small business owners separate personal and business communications while managing all calls from their existing phone. For more information check this related [Blog](https://aws.amazon.com/blogs/messaging-and-targeting/visually-build-telephony-applications-with-aws-step-functions/). 
 
 ![Demo-Workflow](/images/business-phone-number-proxy-workflow-studio.png)
 
